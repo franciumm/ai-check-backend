@@ -1,4 +1,4 @@
-import { Whop } from "@whop/sdk";
+import { WhopClient } from "@whop/sdk";
 import crypto from "crypto";
 
 import clientPromise from '../lib/mongodb.js';
@@ -16,7 +16,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const client = new Whop({ apiKey: process.env.WHOP_API_KEY });
+    const client = new WhopClient({ apiKey: process.env.WHOP_API_KEY });
 
     const licenseKey = crypto.randomUUID();
 
