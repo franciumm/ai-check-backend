@@ -30,7 +30,7 @@ export default async function handler(req, res) {
 
     const checkout = await client.checkoutConfigurations.create({
       plan: {
-        title: "AI Check Deep Scans (800 credits)",
+        title: "AI Fighter Deep Scans (800 credits)",
         plan_type: "one_time",
         initial_price: 5.0,
         currency: "usd",
