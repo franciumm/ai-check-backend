@@ -1,4 +1,4 @@
-import Whop from "@whop/sdk";
+import { Whop } from "@whop/sdk";
 import crypto from "crypto";
 
 import clientPromise from '../lib/mongodb.js';
