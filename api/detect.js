@@ -134,17 +134,24 @@ export default async function handler(req, res) {
     }
     
     // Check credits in MongoDB
-    const client = await clientPromise;
-    const db = client.db('aicheck');
-    const licenses = db.collection('licenses');
+    let credits = 0;
     
-    const licenseDoc = await licenses.findOne({ key: licenseKey });
-    
-    if (!licenseDoc || typeof licenseDoc.credits !== 'number' || licenseDoc.credits <= 0) {
-        return res.status(403).json({ error: 'Insufficient credits or invalid license key.' });
-    }
+    // Testing License Bypass
+    if (licenseKey === 'TEST-LICENSE-KEY') {
+        credits = 9999;
+    } else {
+        const client = await clientPromise;
+        const db = client.db('aicheck');
+        const licenses = db.collection('licenses');
+        
+        const licenseDoc = await licenses.findOne({ key: licenseKey });
+        
+        if (!licenseDoc || typeof licenseDoc.credits !== 'number' || licenseDoc.credits <= 0) {
+            return res.status(403).json({ error: 'Insufficient credits or invalid license key.' });
+        }
 
-    const credits = licenseDoc.credits;
+        credits = licenseDoc.credits;
+    }
 
     // 5. Call Sightengine API with FormData (NOT JSON)
     const formData = new FormData();
@@ -196,11 +203,16 @@ export default async function handler(req, res) {
     // 9. Return JSON: { score, label, generators: response.type.classes || {} }
     const generators = data.type?.classes || {};
 
-    // Deduct 1 credit
-    await licenses.updateOne(
-        { key: licenseKey },
-        { $inc: { credits: -1 } }
-    );
+    // Deduct 1 credit (unless it's the test key)
+    if (licenseKey !== 'TEST-LICENSE-KEY') {
+        const client = await clientPromise;
+        const db = client.db('aicheck');
+        const licenses = db.collection('licenses');
+        await licenses.updateOne(
+            { key: licenseKey },
+            { $inc: { credits: -1 } }
+        );
+    }
 
     return res.status(200).json({
       score,
