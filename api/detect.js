@@ -140,17 +140,24 @@ export default async function handler(req, res) {
     if (licenseKey === 'TEST-LICENSE-KEY') {
         credits = 9999;
     } else {
-        const client = await clientPromise;
-        const db = client.db('aicheck');
-        const licenses = db.collection('licenses');
-        
-        const licenseDoc = await licenses.findOne({ key: licenseKey });
-        
-        if (!licenseDoc || typeof licenseDoc.credits !== 'number' || licenseDoc.credits <= 0) {
-            return res.status(403).json({ error: 'Insufficient credits or invalid license key.' });
-        }
+        try {
+            const client = await clientPromise;
+            const db = client.db('aicheck');
+            const licenses = db.collection('licenses');
+            
+            const licenseDoc = await licenses.findOne({ key: licenseKey });
+            
+            if (!licenseDoc || typeof licenseDoc.credits !== 'number' || licenseDoc.credits <= 0) {
+                return res.status(403).json({ error: 'Insufficient credits or invalid license key.' });
+            }
 
-        credits = licenseDoc.credits;
+            credits = licenseDoc.credits;
+        } catch (dbError) {
+            console.error('Database connection error during license check:', dbError);
+            return res.status(500).json({ 
+                error: 'Could not verify license because the database is unreachable (MongoDB cluster may be paused or IP is blocked).' 
+            });
+        }
     }
 
     // 5. Call Sightengine API with FormData (NOT JSON)
@@ -205,13 +212,19 @@ export default async function handler(req, res) {
 
     // Deduct 1 credit (unless it's the test key)
     if (licenseKey !== 'TEST-LICENSE-KEY') {
-        const client = await clientPromise;
-        const db = client.db('aicheck');
-        const licenses = db.collection('licenses');
-        await licenses.updateOne(
-            { key: licenseKey },
-            { $inc: { credits: -1 } }
-        );
+        try {
+            const client = await clientPromise;
+            const db = client.db('aicheck');
+            const licenses = db.collection('licenses');
+            await licenses.updateOne(
+                { key: licenseKey },
+                { $inc: { credits: -1 } }
+            );
+        } catch (dbError) {
+            console.error('Database connection error during credit deduction:', dbError);
+            // We can silently fail here since the image was already checked, 
+            // but we'll log it.
+        }
     }
 
     return res.status(200).json({
