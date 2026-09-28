@@ -91,13 +91,17 @@ export default async function handler(req, res) {
       });
     }
 
-    const { imageUrl } = body;
+    const { imageUrl, licenseKey } = body;
 
     // 4. Validate imageUrl is a valid HTTP/HTTPS URL
     if (!imageUrl || typeof imageUrl !== 'string' || !imageUrl.trim()) {
       return res.status(400).json({
         error: 'Missing required field: "imageUrl".',
       });
+    }
+    
+    if (!licenseKey) {
+        return res.status(401).json({ error: 'Missing license key' });
     }
 
     const trimmedUrl = imageUrl.trim();
@@ -110,12 +114,28 @@ export default async function handler(req, res) {
     // Verify Sightengine environment credentials
     const apiUser = process.env.SIGHTENGINE_API_USER;
     const apiSecret = process.env.SIGHTENGINE_API_SECRET;
+    
+    // License verification via KV
+    const kvUrl = process.env.KV_REST_API_URL;
+    const kvToken = process.env.KV_REST_API_TOKEN;
 
-    if (!apiUser || !apiSecret) {
-      console.error('Missing SIGHTENGINE_API_USER or SIGHTENGINE_API_SECRET environment variables.');
+    if (!apiUser || !apiSecret || !kvUrl || !kvToken) {
+      console.error('Missing environment variables.');
       return res.status(500).json({
-        error: 'Server configuration error: Sightengine API credentials are not configured.',
+        error: 'Server configuration error.',
       });
+    }
+    
+    // Check credits
+    const kvResponse = await fetch(`${kvUrl}/get/credits:${licenseKey}`, {
+        headers: { Authorization: `Bearer ${kvToken}` }
+    });
+    
+    const kvData = await kvResponse.json();
+    let credits = kvData.result ? parseInt(kvData.result, 10) : 0;
+    
+    if (isNaN(credits) || credits <= 0) {
+        return res.status(403).json({ error: 'Insufficient credits or invalid license key.' });
     }
 
     // 5. Call Sightengine API with FormData (NOT JSON)
@@ -168,10 +188,16 @@ export default async function handler(req, res) {
     // 9. Return JSON: { score, label, generators: response.type.classes || {} }
     const generators = data.type?.classes || {};
 
+    // Deduct 1 credit
+    await fetch(`${kvUrl}/decr/credits:${licenseKey}`, {
+        headers: { Authorization: `Bearer ${kvToken}` }
+    });
+
     return res.status(200).json({
       score,
       label,
       generators,
+      creditsRemaining: credits - 1
     });
   } catch (error) {
     console.error('Error during image detection:', error);
