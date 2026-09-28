@@ -1,4 +1,5 @@
 import clientPromise from '../lib/mongodb.js';
+import { checkRateLimit } from '../lib/rateLimit.js';
 
 /**
  * Vercel Serverless Function: /api/detect
@@ -57,6 +58,14 @@ function mapScoreToLabel(score) {
  * @param {import('@vercel/node').VercelResponse} res
  */
 export default async function handler(req, res) {
+  const ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown-ip';
+  
+  // Rate limit: 30 requests per minute per IP
+  const isAllowed = await checkRateLimit(ip, 30, 60);
+  if (!isAllowed) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+  }
+
   // 1. Set CORS headers for preflight and standard responses
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');

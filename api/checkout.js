@@ -2,10 +2,17 @@ import Whop from "@whop/sdk";
 import crypto from "crypto";
 
 import clientPromise from '../lib/mongodb.js';
+import { checkRateLimit } from '../lib/rateLimit.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
+  }
+
+  const ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown-ip';
+  const isAllowed = await checkRateLimit(`chk_${ip}`, 5, 60);
+  if (!isAllowed) {
+      return res.status(429).json({ error: 'Too many checkout requests. Please wait a minute.' });
   }
 
   try {
