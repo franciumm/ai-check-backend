@@ -153,9 +153,10 @@ export default async function handler(req, res) {
 
             credits = licenseDoc.credits;
         } catch (dbError) {
-            console.error('Database connection error during license check:', dbError);
-            return res.status(500).json({ 
-                error: 'Could not verify license because the database is unreachable (MongoDB cluster may be paused or IP is blocked).' 
+            console.error('Database connection error during license check:', dbError.message);
+            // If the DB is unreachable, we treat it as an invalid license so the user gets a clear error
+            return res.status(403).json({ 
+                error: 'Invalid license key.' 
             });
         }
     }
