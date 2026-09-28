@@ -1,3 +1,5 @@
+import clientPromise from '../lib/mongodb.js';
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
@@ -8,10 +10,8 @@ export default async function handler(req, res) {
 
     // Check if it's a payment success event
     if (event.action === 'payment.succeeded') {
-      // Try to extract license key from custom fields
       let licenseKey = null;
       
-      // Whop payload structure varies, check custom_fields
       if (event.data && event.data.custom_fields && event.data.custom_fields.license_key) {
          licenseKey = event.data.custom_fields.license_key;
       }
@@ -21,17 +21,16 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored - no license key' });
       }
 
-      const kvUrl = process.env.KV_REST_API_URL;
-      const kvToken = process.env.KV_REST_API_TOKEN;
+      const client = await clientPromise;
+      const db = client.db('aicheck');
       
-      if (kvUrl && kvToken) {
-        // Add 800 credits to the key
-        await fetch(`${kvUrl}/set/credits:${licenseKey}/800`, {
-           method: 'POST',
-           headers: { Authorization: `Bearer ${kvToken}` }
-        });
-        console.log(`Activated license key ${licenseKey} with 800 credits`);
-      }
+      await db.collection('licenses').updateOne(
+        { key: licenseKey },
+        { $inc: { credits: 800 }, $set: { updatedAt: new Date() } },
+        { upsert: true }
+      );
+      
+      console.log(`Activated license key ${licenseKey} with 800 credits in MongoDB`);
     }
 
     return res.status(200).json({ received: true });

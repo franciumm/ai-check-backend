@@ -1,6 +1,8 @@
 import Whop from "@whop/sdk";
 import crypto from "crypto";
 
+import clientPromise from '../lib/mongodb.js';
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
@@ -10,15 +12,14 @@ export default async function handler(req, res) {
     const client = new Whop({ apiKey: process.env.WHOP_API_KEY });
     const licenseKey = crypto.randomUUID();
 
-    // Pre-stage in Vercel KV with 0 credits
-    const kvUrl = process.env.KV_REST_API_URL;
-    const kvToken = process.env.KV_REST_API_TOKEN;
-    if (kvUrl && kvToken) {
-       await fetch(`${kvUrl}/set/credits:${licenseKey}/0`, {
-         method: 'POST',
-         headers: { Authorization: `Bearer ${kvToken}` }
-       });
-    }
+    // Pre-stage in MongoDB with 0 credits
+    const mongoClient = await clientPromise;
+    const db = mongoClient.db('aicheck');
+    await db.collection('licenses').insertOne({
+        key: licenseKey,
+        credits: 0,
+        createdAt: new Date()
+    });
 
     const checkout = await client.checkoutConfigurations.create({
       plan: {

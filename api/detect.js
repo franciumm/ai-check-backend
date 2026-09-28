@@ -1,3 +1,5 @@
+import clientPromise from '../lib/mongodb.js';
+
 /**
  * Vercel Serverless Function: /api/detect
  * Backend endpoint for 'AI Check' Chrome extension.
@@ -114,29 +116,26 @@ export default async function handler(req, res) {
     // Verify Sightengine environment credentials
     const apiUser = process.env.SIGHTENGINE_API_USER;
     const apiSecret = process.env.SIGHTENGINE_API_SECRET;
-    
-    // License verification via KV
-    const kvUrl = process.env.KV_REST_API_URL;
-    const kvToken = process.env.KV_REST_API_TOKEN;
 
-    if (!apiUser || !apiSecret || !kvUrl || !kvToken) {
+    if (!apiUser || !apiSecret) {
       console.error('Missing environment variables.');
       return res.status(500).json({
         error: 'Server configuration error.',
       });
     }
     
-    // Check credits
-    const kvResponse = await fetch(`${kvUrl}/get/credits:${licenseKey}`, {
-        headers: { Authorization: `Bearer ${kvToken}` }
-    });
+    // Check credits in MongoDB
+    const client = await clientPromise;
+    const db = client.db('aicheck');
+    const licenses = db.collection('licenses');
     
-    const kvData = await kvResponse.json();
-    let credits = kvData.result ? parseInt(kvData.result, 10) : 0;
+    const licenseDoc = await licenses.findOne({ key: licenseKey });
     
-    if (isNaN(credits) || credits <= 0) {
+    if (!licenseDoc || typeof licenseDoc.credits !== 'number' || licenseDoc.credits <= 0) {
         return res.status(403).json({ error: 'Insufficient credits or invalid license key.' });
     }
+
+    const credits = licenseDoc.credits;
 
     // 5. Call Sightengine API with FormData (NOT JSON)
     const formData = new FormData();
@@ -189,9 +188,10 @@ export default async function handler(req, res) {
     const generators = data.type?.classes || {};
 
     // Deduct 1 credit
-    await fetch(`${kvUrl}/decr/credits:${licenseKey}`, {
-        headers: { Authorization: `Bearer ${kvToken}` }
-    });
+    await licenses.updateOne(
+        { key: licenseKey },
+        { $inc: { credits: -1 } }
+    );
 
     return res.status(200).json({
       score,
