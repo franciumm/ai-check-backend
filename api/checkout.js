@@ -1,8 +1,5 @@
-import { WhopClient } from "@whop/sdk";
-import crypto from "crypto";
-
-import clientPromise from '../lib/mongodb.js';
 import { checkRateLimit } from '../lib/rateLimit.js';
+import { createLicenseCheckout } from '../lib/whop.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -16,36 +13,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    const client = new WhopClient({ apiKey: process.env.WHOP_API_KEY });
-    const licenseKey = crypto.randomUUID();
-
-    // Pre-stage in MongoDB with 0 credits
-    const mongoClient = await clientPromise;
-    const db = mongoClient.db('aicheck');
-    await db.collection('licenses').insertOne({
-        key: licenseKey,
-        credits: 0,
-        createdAt: new Date()
-    });
-
-    const checkout = await client.checkoutConfigurations.create({
-      plan: {
-        title: "AI Fighter Deep Scans (800 credits)",
-        plan_type: "one_time",
-        initial_price: 5.0,
-        currency: "usd",
-      },
-      custom_fields: {
-        license_key: licenseKey
-      },
-      success_url: `https://ai-check-backend.vercel.app/api/success?key=${licenseKey}`
-    });
+    const { checkoutUrl } = await createLicenseCheckout();
 
     // Redirect user directly to the Whop checkout page
-    res.redirect(303, checkout.purchase_url);
+    res.redirect(303, checkoutUrl);
 
   } catch (error) {
     console.error("Whop checkout error:", error);
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: 'Could not start checkout. Please try again later.' });
   }
 }

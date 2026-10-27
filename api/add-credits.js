@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+
 import clientPromise from '../lib/mongodb.js';
 
 export default async function handler(req, res) {
@@ -5,17 +7,24 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const { adminSecret, credits = 800 } = req.body;
+  const { adminSecret, credits = 800 } = req.body || {};
 
-  if (adminSecret !== process.env.ADMIN_SECRET) {
+  // An unset ADMIN_SECRET must not let a request that omits adminSecret through
+  const expected = process.env.ADMIN_SECRET;
+  if (!expected || typeof adminSecret !== 'string' ||
+      adminSecret.length !== expected.length ||
+      !crypto.timingSafeEqual(Buffer.from(adminSecret), Buffer.from(expected))) {
     return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  if (!Number.isInteger(credits) || credits <= 0) {
+    return res.status(400).json({ error: 'credits must be a positive integer' });
   }
 
   const client = await clientPromise;
   const db = client.db('aicheck');
 
-  // Generate a random license key (UUID v4 style fallback)
-  const licenseKey = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  const licenseKey = crypto.randomUUID();
 
   // Set credits in MongoDB
   await db.collection('licenses').insertOne({

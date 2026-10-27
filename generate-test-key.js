@@ -1,7 +1,12 @@
 import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
-const uri = "mongodb+srv://yousefgamer9733_db_user:jT2XN9vCk4237QNV@cluster0.cgvj9nl.mongodb.net/?retryWrites=true&w=majority";
+// Run with: MONGODB_URI="mongodb+srv://..." node generate-test-key.js
+const uri = process.env.MONGODB_URI;
+if (!uri) {
+    console.error("Set MONGODB_URI to your MongoDB connection string first.");
+    process.exit(1);
+}
 
 async function run() {
     const client = new MongoClient(uri);

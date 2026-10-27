@@ -52,20 +52,68 @@ function mapScoreToLabel(score) {
 }
 
 /**
+ * Calls the Sightengine genai model and maps the result.
+ * Returns { status, body }; status 200 means body is { score, label, generators }.
+ */
+async function analyzeWithSightengine(imageUrl, apiUser, apiSecret) {
+  // Sightengine expects FormData (NOT JSON)
+  const formData = new FormData();
+  formData.append('url', imageUrl);
+  formData.append('models', 'genai');
+  formData.append('api_user', apiUser);
+  formData.append('api_secret', apiSecret);
+
+  const sightengineResponse = await fetch('https://api.sightengine.com/1.0/check.json', {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!sightengineResponse.ok) {
+    const errorData = await sightengineResponse.json().catch(() => null);
+    const errorMessage =
+      errorData?.error?.message ||
+      `Sightengine API responded with status ${sightengineResponse.status} (${sightengineResponse.statusText})`;
+
+    return {
+      status: sightengineResponse.status >= 400 && sightengineResponse.status < 500 ? 400 : 502,
+      body: { error: errorMessage, details: errorData || undefined },
+    };
+  }
+
+  const data = await sightengineResponse.json();
+
+  // Application-level failure returned by Sightengine
+  if (data.status === 'failure') {
+    return {
+      status: 400,
+      body: {
+        error: data.error?.message || 'Sightengine analysis failed for the provided image.',
+        details: data.error,
+      },
+    };
+  }
+
+  const score = data?.type?.ai_generated;
+  if (typeof score !== 'number') {
+    return {
+      status: 502,
+      body: { error: 'Sightengine response missing expected "type.ai_generated" score.', details: data },
+    };
+  }
+
+  return {
+    status: 200,
+    body: { score, label: mapScoreToLabel(score), generators: data.type?.classes || {} },
+  };
+}
+
+/**
  * Main Vercel serverless request handler.
  *
  * @param {import('@vercel/node').VercelRequest} req
  * @param {import('@vercel/node').VercelResponse} res
  */
 export default async function handler(req, res) {
-  const ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown-ip';
-  
-  // Rate limit: 30 requests per minute per IP
-  const isAllowed = await checkRateLimit(ip, 30, 60);
-  if (!isAllowed) {
-      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
-  }
-
   // 1. Set CORS headers for preflight and standard responses
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -74,6 +122,14 @@ export default async function handler(req, res) {
   // Handle OPTIONS preflight request
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
+  }
+
+  const ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown-ip';
+
+  // Rate limit: 30 requests per minute per IP
+  const isAllowed = await checkRateLimit(ip, 30, 60);
+  if (!isAllowed) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
   }
 
   // 2. Only allow POST method
@@ -133,106 +189,43 @@ export default async function handler(req, res) {
       });
     }
     
-    // Check credits in MongoDB
-    let credits = 0;
-    
-    // Testing License Bypass
-    if (licenseKey === 'TEST-LICENSE-KEY') {
-        credits = 9999;
-    } else {
-        try {
-            const client = await clientPromise;
-            const db = client.db('aicheck');
-            const licenses = db.collection('licenses');
-            
-            const licenseDoc = await licenses.findOne({ key: licenseKey });
-            
-            if (!licenseDoc || typeof licenseDoc.credits !== 'number' || licenseDoc.credits <= 0) {
-                return res.status(403).json({ error: 'Insufficient credits or invalid license key.' });
-            }
-
-            credits = licenseDoc.credits;
-        } catch (dbError) {
-            console.error('Database connection error during license check:', dbError.message);
-            // If the DB is unreachable, we treat it as an invalid license so the user gets a clear error
-            return res.status(403).json({ 
-                error: 'Invalid license key.' 
-            });
-        }
+    // Reserve 1 credit atomically before calling Sightengine, so concurrent
+    // requests can't spend more credits than the license has.
+    let licenses;
+    let licenseDoc;
+    try {
+        const client = await clientPromise;
+        licenses = client.db('aicheck').collection('licenses');
+        licenseDoc = await licenses.findOneAndUpdate(
+            { key: licenseKey, credits: { $gt: 0 } },
+            { $inc: { credits: -1 } },
+            { returnDocument: 'after' }
+        );
+    } catch (dbError) {
+        console.error('Database connection error during license check:', dbError.message);
+        return res.status(503).json({ error: 'License service unavailable. Please try again.' });
     }
 
-    // 5. Call Sightengine API with FormData (NOT JSON)
-    const formData = new FormData();
-    formData.append('url', trimmedUrl);
-    formData.append('models', 'genai');
-    formData.append('api_user', apiUser);
-    formData.append('api_secret', apiSecret);
-
-    const sightengineResponse = await fetch('https://api.sightengine.com/1.0/check.json', {
-      method: 'POST',
-      body: formData,
-    });
-
-    // 6. Parse Sightengine response
-    if (!sightengineResponse.ok) {
-      const errorData = await sightengineResponse.json().catch(() => null);
-      const errorMessage =
-        errorData?.error?.message ||
-        `Sightengine API responded with status ${sightengineResponse.status} (${sightengineResponse.statusText})`;
-
-      return res.status(sightengineResponse.status >= 400 && sightengineResponse.status < 500 ? 400 : 502).json({
-        error: errorMessage,
-        details: errorData || undefined,
-      });
+    if (!licenseDoc) {
+        return res.status(403).json({ error: 'Insufficient credits or invalid license key.' });
     }
 
-    const data = await sightengineResponse.json();
+    const result = await analyzeWithSightengine(trimmedUrl, apiUser, apiSecret).catch((err) => ({
+        status: 502,
+        body: { error: 'Could not reach the detection service.', message: err.message },
+    }));
 
-    // Check for application-level failure returned by Sightengine
-    if (data.status === 'failure') {
-      return res.status(400).json({
-        error: data.error?.message || 'Sightengine analysis failed for the provided image.',
-        details: data.error,
-      });
-    }
-
-    // 7. Extract the ai_generated score from response.type.ai_generated
-    const score = data?.type?.ai_generated;
-    if (typeof score !== 'number') {
-      return res.status(502).json({
-        error: 'Sightengine response missing expected "type.ai_generated" score.',
-        details: data,
-      });
-    }
-
-    // 8. Map score to label
-    const label = mapScoreToLabel(score);
-
-    // 9. Return JSON: { score, label, generators: response.type.classes || {} }
-    const generators = data.type?.classes || {};
-
-    // Deduct 1 credit (unless it's the test key)
-    if (licenseKey !== 'TEST-LICENSE-KEY') {
-        try {
-            const client = await clientPromise;
-            const db = client.db('aicheck');
-            const licenses = db.collection('licenses');
-            await licenses.updateOne(
-                { key: licenseKey },
-                { $inc: { credits: -1 } }
-            );
-        } catch (dbError) {
-            console.error('Database connection error during credit deduction:', dbError);
-            // We can silently fail here since the image was already checked, 
-            // but we'll log it.
-        }
+    if (result.status !== 200) {
+        // The scan failed, so give the reserved credit back
+        await licenses.updateOne({ key: licenseKey }, { $inc: { credits: 1 } }).catch((dbError) => {
+            console.error('Failed to refund credit:', dbError);
+        });
+        return res.status(result.status).json(result.body);
     }
 
     return res.status(200).json({
-      score,
-      label,
-      generators,
-      creditsRemaining: credits - 1
+      ...result.body,
+      creditsRemaining: licenseDoc.credits
     });
   } catch (error) {
     console.error('Error during image detection:', error);

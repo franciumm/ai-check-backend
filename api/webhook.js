@@ -1,5 +1,6 @@
-import { Webhook } from 'standardwebhooks';
+import { unwrapWebhook } from '@whop/sdk/helpers';
 import clientPromise from '../lib/mongodb.js';
+import { CREDITS_PER_PURCHASE } from '../lib/constants.js';
 
 // Disable default body parser so we can get the raw body for signature verification
 export const config = {
@@ -36,38 +37,48 @@ export default async function handler(req, res) {
 
   let event;
   try {
-    // 3. Initialize and verify
-    const wh = new Webhook(secret);
-    event = wh.verify(rawBody, headers);
+    // 3. Verify. Whop signs with the literal `ws_` secret bytes; unwrapWebhook encodes
+    // it the way standardwebhooks expects (passing it raw to `new Webhook` throws).
+    event = unwrapWebhook(rawBody, { headers, key: secret });
   } catch (err) {
     console.error("Verification failed:", err);
     return res.status(400).json({ error: "Invalid signature" });
   }
 
   try {
-    // Check if it's a payment success event
-    if (event.action === 'payment.succeeded') {
-      let licenseKey = null;
-      
-      if (event.data && event.data.custom_fields && event.data.custom_fields.license_key) {
-         licenseKey = event.data.custom_fields.license_key;
-      }
-      
+    // Check if it's a payment success event (`type` in current payloads, `action` in legacy ones)
+    const eventType = event.type ?? event.action;
+    if (eventType === 'payment.succeeded') {
+      const payment = event.data || {};
+      const licenseKey = payment.metadata?.license_key
+        ?? payment.checkout_configuration?.metadata?.license_key
+        ?? payment.custom_fields?.license_key;
+
       if (!licenseKey) {
-        console.error("Webhook received but no license key found in custom_fields");
+        console.error("Webhook received but no license key found in payment metadata");
         return res.status(200).json({ status: 'Ignored - no license key' });
       }
 
       const client = await clientPromise;
       const db = client.db('aicheck');
-      
-      await db.collection('licenses').updateOne(
-        { key: licenseKey },
-        { $inc: { credits: 800 }, $set: { updatedAt: new Date() } },
-        { upsert: true }
+
+      // Whop retries deliveries; record the payment id so a retry can't credit twice.
+      // The key is pre-staged at checkout, so no upsert.
+      const paymentId = payment.id || req.headers["webhook-id"];
+      const result = await db.collection('licenses').updateOne(
+        { key: licenseKey, paidPaymentIds: { $ne: paymentId } },
+        {
+          $inc: { credits: CREDITS_PER_PURCHASE },
+          $addToSet: { paidPaymentIds: paymentId },
+          $set: { updatedAt: new Date() }
+        }
       );
-      
-      console.log(`Activated license key ${licenseKey} with 800 credits in MongoDB`);
+
+      if (result.matchedCount === 0) {
+        console.warn(`No credit applied for ${licenseKey}: unknown key or payment ${paymentId} already applied`);
+      } else {
+        console.log(`Activated license key ${licenseKey} with ${CREDITS_PER_PURCHASE} credits in MongoDB`);
+      }
     }
 
     return res.status(200).json({ received: true });
